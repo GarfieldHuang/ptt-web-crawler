@@ -2,11 +2,34 @@ from flask import Flask, request, jsonify
 import json
 import sys
 import os
+import logging
+import traceback
+
+# 設置基本日誌配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # 確保可以匯入 PttWebCrawler 模組
 # 在實際使用時，您已經 fork 了該專案，這個模組應該已經在您的環境中
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PttWebCrawler.crawler import PttWebCrawler
+from PttWebCrawler.error_handlers import get_error_response
+
+# 檢測是否在 Azure 環境中運行
+IS_AZURE = 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ
+
+# 如果在 Azure 中運行，進行特殊設定
+if IS_AZURE:
+    logging.info("在 Azure 環境中運行 app.py，進行特殊配置")
+    
+    try:
+        # 導入 Azure 輔助函式
+        from PttWebCrawler.azure_helpers import setup_for_azure
+        setup_for_azure()
+    except Exception as e:
+        logging.error(f"配置 Azure 環境失敗: {e}")
 
 app = Flask(__name__)
 
@@ -123,12 +146,48 @@ def get_articles_list():
             # 初始化爬蟲
             crawler = PttWebCrawler(as_lib=True)
             
-            # 在 Azure 上執行時可能需要更長的超時時間
-            if 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ:
-                app.logger.info("檢測到 Azure 環境，增加超時時間")
-                timeout = max(timeout, 60)  # Azure 環境下最小超時時間為 60 秒
+            # 在 Azure 上執行時可能需要特殊處理
+            is_azure = 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ
+            if is_azure:
+                app.logger.info("檢測到 Azure 環境，啟用特殊處理")
+                # Azure 環境下最小超時時間為 60 秒
+                timeout = max(timeout, 60)  
+                
+                # 顯示 Azure 網路配置相關診斷資訊
+                try:
+                    import socket
+                    app.logger.info(f"主機名稱: {socket.gethostname()}")
+                    
+                    # 嘗試對 PTT 進行 DNS 查詢，測試基本網路連接
+                    try:
+                        ptt_ip = socket.gethostbyname('www.ptt.cc')
+                        app.logger.info(f"PTT DNS 解析結果: {ptt_ip}")
+                    except Exception as e:
+                        app.logger.warning(f"無法解析 PTT IP: {e}")
+                    
+                    # 獲取 Azure 環境變數信息
+                    azure_vars = {k: v for k, v in os.environ.items() 
+                                if k.startswith('AZURE') or k.startswith('WEBSITE') or k.startswith('HTTP_')}
+                    app.logger.info(f"Azure 環境變數: {azure_vars}")
+                except Exception as e:
+                    app.logger.warning(f"獲取網路診斷資訊失敗: {e}")
             
-            result = crawler.parse_list_articles(start_idx, end_idx, board, timeout=timeout)
+            # 嘗試執行爬蟲操作
+            try:
+                result = crawler.parse_list_articles(start_idx, end_idx, board, timeout=timeout)
+            except Exception as e:
+                app.logger.error(f"爬蟲執行時發生異常: {e}")
+                app.logger.error(f"異常詳情: {traceback.format_exc()}")
+                
+                # 使用錯誤處理模組生成詳細的錯誤響應
+                error_response = get_error_response(e, {
+                    "board": board,
+                    "start": start_idx,
+                    "end": end_idx,
+                    "timeout": timeout
+                })
+                
+                return jsonify(error_response), 500
             
             # 檢查是否爬取到文章和錯誤
             if 'articles' in result:

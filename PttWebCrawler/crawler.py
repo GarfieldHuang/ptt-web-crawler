@@ -11,8 +11,26 @@ import argparse
 import time
 import random
 import codecs
+import logging
+import socket
+import traceback
+from datetime import datetime
 from bs4 import BeautifulSoup
 from six import u
+from requests.adapters import HTTPAdapter
+
+# 根據 Python 版本導入不同的 Retry
+try:
+    # Python 3
+    from urllib3.util import Retry
+except ImportError:
+    try:
+        # 較舊版本的 requests
+        from requests.packages.urllib3.util.retry import Retry
+    except ImportError:
+        # 如果都無法導入，定義一個空的 Retry 類
+        class Retry:
+            pass
 
 __version__ = '1.0'
 
@@ -286,13 +304,61 @@ class PttWebCrawler(object):
             'Upgrade-Insecure-Requests': '1'
         }
         
-
-        resp = session.get(
-            url=link, 
-            headers=headers, 
-            verify=VERIFY, 
-            timeout=timeout
-        )
+        # 檢查是否在 Azure 環境中運行
+        is_azure = 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ
+        
+        if is_azure:
+            print("在 Azure 環境中運行 parse 函數，啟用特殊處理")
+            # 增加請求超時
+            timeout = max(timeout, 30)
+            
+            # 修改請求標頭以增加成功率
+            if 'Referer' not in headers:
+                headers['Referer'] = 'https://www.ptt.cc/bbs/' + board + '/index.html'
+                
+            # 配置 session
+            session.trust_env = False  # 不使用系統代理設定
+            
+            # 檢查代理配置
+            proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+            if proxy:
+                proxies = {'http': proxy, 'https': proxy}
+                print(f"使用代理: {proxy}")
+            else:
+                proxies = None
+            
+            # 嘗試最多 3 次
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    print(f"嘗試第 {retry+1}/{max_retries} 次請求")
+                    resp = session.get(
+                        url=link,
+                        headers=headers,
+                        verify=VERIFY,
+                        timeout=timeout,
+                        proxies=proxies,
+                        allow_redirects=True
+                    )
+                    if resp.status_code == 200:
+                        break
+                    print(f"請求失敗，狀態碼: {resp.status_code}")
+                    time.sleep(3)  # 失敗後等待一段時間再重試
+                except Exception as e:
+                    print(f"請求異常: {e}")
+                    if retry == max_retries - 1:
+                        raise
+                    time.sleep(3)
+            else:  # 所有重試都失敗
+                return json.dumps({"error": "無法連接到 PTT 網站", "article_id": article_id}, sort_keys=True, ensure_ascii=False)
+        else:
+            # 非 Azure 環境，使用正常請求
+            resp = session.get(
+                url=link, 
+                headers=headers, 
+                verify=VERIFY, 
+                timeout=timeout
+            )
         
         if resp.status_code != 200:
             print('invalid url:', resp.url)
@@ -495,21 +561,83 @@ class PttWebCrawler(object):
         ]
         headers['User-Agent'] = random.choice(user_agents)
         
-        # Azure 上執行時處理 cookie 的特殊邏輯
+        # 檢查是否在 Azure 環境中運行
+        is_azure = 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ
+        
+        if is_azure:
+            print("檢測到在 Azure 環境中運行，啟用特殊處理")
+            
+            # 增加連接超時時間
+            timeout = max(timeout, 60)
+            
+            # 設置最大重試次數
+            max_retries = 3
+            
+            # 在 Azure 中使用代理可能有幫助（僅用於測試）
+            # 注意：如需使用代理，請在 Azure 中設置環境變數
+            proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+            if proxy:
+                proxies = {
+                    'http': proxy,
+                    'https': proxy
+                }
+                print(f"使用代理服務器: {proxy}")
+            else:
+                proxies = None
+                
+        else:
+            max_retries = 1
+            proxies = None
+        
+        # 處理 cookie 的特殊邏輯
         try:
-            # 直接設定年齡驗證 cookie，跳過需要請求首頁的步驟
+            # 直接設定年齡驗證 cookie
             session.cookies.set('over18', '1', domain='www.ptt.cc')
             
             # 直接訪問目標板塊
             print(f"訪問 {board} 板")
             board_url = f'{self.PTT_URL}/bbs/{board}/index.html'
-            resp = session.get(
-                board_url,
-                headers=headers,
-                timeout=timeout,
-                verify=VERIFY,
-                allow_redirects=True  # 允許重定向，可能對於處理某些防爬蟲機制有幫助
-            )
+            
+            # 使用循環進行重試
+            for retry in range(max_retries):
+                try:
+                    resp = session.get(
+                        board_url,
+                        headers=headers,
+                        timeout=timeout,
+                        verify=VERIFY,
+                        allow_redirects=True,  # 允許重定向
+                        proxies=proxies
+                    )
+                    
+                    if resp.status_code == 200:
+                        break
+                    
+                    print(f"嘗試 {retry+1}/{max_retries} 失敗，狀態碼: {resp.status_code}")
+                    
+                    # 只有在 Azure 環境中才嘗試使用不同的請求方式
+                    if is_azure and retry < max_retries - 1:
+                        # 短暫延遲後再重試
+                        time.sleep(5)
+                        
+                        # 更換 User-Agent
+                        headers['User-Agent'] = random.choice(user_agents)
+                        
+                        # 嘗試直接使用更簡單的標頭
+                        if retry == 1:
+                            # 簡化請求標頭
+                            simple_headers = {
+                                'User-Agent': headers['User-Agent'],
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            }
+                            headers = simple_headers
+                            print("使用簡化的請求標頭重試")
+                
+                except Exception as e:
+                    print(f"訪問嘗試 {retry+1}/{max_retries} 發生異常: {e}")
+                    if retry == max_retries - 1:
+                        raise
+                    time.sleep(5)
             
             # 檢查板塊是否存在
             if resp.status_code != 200:
