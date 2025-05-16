@@ -9,6 +9,7 @@ import json
 import requests
 import argparse
 import time
+import random
 import codecs
 from bs4 import BeautifulSoup
 from six import u
@@ -393,17 +394,26 @@ class PttWebCrawler(object):
             一個字典，包含爬取到的文章列表資訊
         """
         articles = []
+        error_log = []
         
         # 建立 Session 保持 cookie
         session = requests.Session()
         
-        # 設定模擬瀏覽器 headers
+        # 使用更簡單的 headers，有時候太多 headers 反而容易被識別為爬蟲
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://www.ptt.cc/bbs/index.html',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
         }
+        
+        # 隨機選擇一個常見的 User-Agent，增加爬蟲的隱蔽性
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
+        ]
+        headers['User-Agent'] = random.choice(user_agents)
         
         # 第一次請求獲取 cookies
         try:
@@ -416,34 +426,98 @@ class PttWebCrawler(object):
                 verify=VERIFY
             )
             
+            if resp.status_code != 200:
+                error_msg = f"訪問 PTT 首頁失敗，狀態碼: {resp.status_code}"
+                print(error_msg)
+                error_log.append(error_msg)
+                return {'articles': [], 'errors': error_log}
+            
+            # 檢查是否遇到年齡驗證頁面
+            if '您必須年滿十八歲才能瀏覽此網頁' in resp.text:
+                print("遇到年齡驗證頁面，嘗試通過...")
+                
+                # 獲取表單送出 URL
+                form_action_url = 'https://www.ptt.cc/ask/over18'
+                
+                # 送出年齡確認表單
+                resp = session.post(
+                    form_action_url,
+                    data={'from': '/bbs/index.html', 'yes': 'yes'},
+                    headers=headers,
+                    timeout=timeout,
+                    verify=VERIFY
+                )
+                
+                if resp.status_code != 200:
+                    error_msg = f"年齡驗證失敗，狀態碼: {resp.status_code}"
+                    print(error_msg)
+                    error_log.append(error_msg)
+                    return {'articles': [], 'errors': error_log}
+            
             # 強制設置 over18 cookie
             session.cookies.set('over18', '1', domain='www.ptt.cc')
             
             # 直接訪問目標板塊
             print(f"訪問 {board} 板")
+            board_url = f'{self.PTT_URL}/bbs/{board}/index.html'
             resp = session.get(
-                f'{self.PTT_URL}/bbs/{board}/index.html',
+                board_url,
                 headers=headers,
                 timeout=timeout,
                 verify=VERIFY
             )
             
+            # 檢查板塊是否存在
             if resp.status_code != 200:
-                print(f"訪問 {board} 板失敗，狀態碼: {resp.status_code}")
-                return {'articles': []}
-                
-            # 獲取最大頁數
-            max_page = self.getLastPage(board, timeout)
-            print(f"{board} 板最大頁數: {max_page}")
+                error_msg = f"訪問 {board} 板失敗，狀態碼: {resp.status_code}，可能板塊不存在或已被暫停"
+                print(error_msg)
+                error_log.append(error_msg)
+                return {'articles': [], 'errors': error_log}
             
-            # 確保頁碼在有效範圍內
-            if end > max_page:
-                end = max_page
-                print(f"結束頁碼超過最大頁數，已自動調整為: {end}")
+            # 檢查是否需要年齡驗證（有些板塊會單獨需要）
+            if '您必須年滿十八歲才能瀏覽此網頁' in resp.text:
+                print(f"{board} 板需要年齡驗證，嘗試通過...")
+                resp = session.post(
+                    'https://www.ptt.cc/ask/over18',
+                    data={'from': f'/bbs/{board}/index.html', 'yes': 'yes'},
+                    headers=headers,
+                    timeout=timeout,
+                    verify=VERIFY
+                )
+                if resp.status_code != 200:
+                    error_msg = f"板塊 {board} 年齡驗證失敗，狀態碼: {resp.status_code}"
+                    print(error_msg)
+                    error_log.append(error_msg)
+                    return {'articles': [], 'errors': error_log}
+                
+                # 再次訪問板塊
+                resp = session.get(
+                    board_url,
+                    headers=headers,
+                    timeout=timeout,
+                    verify=VERIFY
+                )
+            
+            # 獲取最大頁數
+            try:
+                max_page = self.getLastPage(board, timeout)
+                print(f"{board} 板最大頁數: {max_page}")
+                
+                # 確保頁碼在有效範圍內
+                if end > max_page:
+                    end = max_page
+                    print(f"結束頁碼超過最大頁數，已自動調整為: {end}")
+            except Exception as e:
+                error_msg = f"獲取最大頁數時出錯: {e}"
+                print(error_msg)
+                error_log.append(error_msg)
+                # 如果無法獲取最大頁數，嘗試繼續爬取而不調整頁碼範圍
                 
         except Exception as e:
-            print(f"初始化連接時出錯: {e}")
-            return {'articles': []}
+            error_msg = f"初始化連接時出錯: {e}"
+            print(error_msg)
+            error_log.append(error_msg)
+            return {'articles': [], 'errors': error_log}
         
         # 開始爬取頁面
         for i in range(start, end + 1):
@@ -459,15 +533,66 @@ class PttWebCrawler(object):
                 )
                 
                 if resp.status_code != 200:
-                    print(f"頁面請求失敗，狀態碼: {resp.status_code}")
+                    error_msg = f"頁面請求失敗，狀態碼: {resp.status_code}"
+                    print(error_msg)
+                    error_log.append(error_msg)
                     continue
+                
+                # 保存 HTML 以便偵錯 (可選)
+                # with open(f"page_{board}_{i}.html", "w", encoding="utf-8") as f:
+                #     f.write(resp.text)
+                
+                # 保存 HTML 以便偵錯（僅在開發測試時啟用）
+                # html_filename = f"debug_{board}_{i}.html"
+                # with open(html_filename, "w", encoding="utf-8") as f:
+                #     f.write(resp.text)
+                # print(f"已保存 HTML 到 {html_filename}")
                 
                 # 解析 HTML
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 
                 # 查找所有文章區塊
-                article_divs = soup.select('div.r-ent')
-                print(f"找到 {len(article_divs)} 個文章區塊")
+                try:
+                    article_divs = soup.select('div.r-ent')
+                    print(f"找到 {len(article_divs)} 個文章區塊")
+                    
+                    # 如果找不到文章區塊，可能是頁面結構變化或反爬蟲機制
+                    if len(article_divs) == 0:
+                        # 嘗試其他選擇器
+                        article_divs = soup.find_all("div", class_="r-ent")
+                        print(f"使用 find_all 方法找到 {len(article_divs)} 個文章區塊")
+                        
+                        if len(article_divs) == 0:
+                            error_msg = f"在頁面 {page_url} 中找不到文章區塊，可能被反爬蟲機制阻擋或頁面結構變化"
+                            print(error_msg)
+                            error_log.append(error_msg)
+                            
+                            # 檢查頁面是否包含特定的字串，判斷是否是反爬蟲機制
+                            if '禁止使用' in resp.text or '您的連線已被管理員封鎖' in resp.text:
+                                error_msg = "可能被 PTT 的反爬蟲機制阻擋"
+                                print(error_msg)
+                                error_log.append(error_msg)
+                            elif '無法連線至伺服器' in resp.text:
+                                error_msg = "無法連線至 PTT 伺服器"
+                                print(error_msg)
+                                error_log.append(error_msg)
+                                
+                            # 檢查頁面的基本結構
+                            main_container = soup.select_one('div#main-container')
+                            if main_container:
+                                print("找到 main-container，但沒有文章區塊")
+                                # 檢查是否有其他可能的文章容器
+                                other_containers = main_container.find_all("div", recursive=False)
+                                print(f"main-container 中有 {len(other_containers)} 個直接子 div")
+                            else:
+                                print("頁面中沒有找到 main-container")
+                                
+                            continue
+                except Exception as e:
+                    error_msg = f"解析 HTML 時發生錯誤: {e}"
+                    print(error_msg)
+                    error_log.append(error_msg)
+                    continue
                 
                 for div in article_divs:
                     try:
@@ -547,18 +672,26 @@ class PttWebCrawler(object):
                         articles.append(article_info)
                         
                     except Exception as e:
-                        print(f"處理文章列表項目時出錯: {e}")
+                        error_msg = f"處理文章列表項目時出錯: {e}"
+                        print(error_msg)
+                        error_log.append(error_msg)
                         continue
                 
-                # 頁面之間的延遲
-                time.sleep(0.5)
+                # 頁面之間的延遲，隨機化以避免被識別為爬蟲
+                sleep_time = 0.5 + random.random() * 1.5  # 0.5 到 2 秒之間
+                time.sleep(sleep_time)
                 
             except Exception as e:
-                print(f"爬取頁面 {page_url} 時出錯: {e}")
+                error_msg = f"爬取頁面 {page_url} 時出錯: {e}"
+                print(error_msg)
+                error_log.append(error_msg)
                 continue
                 
         print(f"總共爬取了 {len(articles)} 篇文章列表資訊")
-        return {'articles': articles}
+        result = {'articles': articles}
+        if error_log:
+            result['errors'] = error_log
+        return result
 
 if __name__ == '__main__':
     c = PttWebCrawler()

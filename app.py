@@ -84,6 +84,7 @@ def get_articles_list():
     board = request.args.get('board', '')
     start_idx = request.args.get('start', '')
     end_idx = request.args.get('end', '')
+    timeout = request.args.get('timeout', '30')  # 增加可選的超時參數，默認 30 秒
     
     # 參數檢查
     if not board:
@@ -94,15 +95,23 @@ def get_articles_list():
         if start_idx and end_idx:
             start_idx = int(start_idx)
             end_idx = int(end_idx)
+            timeout = int(timeout)
             
             # 初始化爬蟲
             crawler = PttWebCrawler(as_lib=True)
-            articles = crawler.parse_list_articles(start_idx, end_idx, board)
-            return jsonify(articles)
+            result = crawler.parse_list_articles(start_idx, end_idx, board, timeout=timeout)
+            
+            # 檢查是否爬取到文章和錯誤
+            if 'articles' in result and len(result['articles']) == 0:
+                if 'errors' in result and len(result['errors']) > 0:
+                    app.logger.error(f"爬取 {board} 板時出錯: {result['errors']}")
+            
+            return jsonify(result)
         else:
             return jsonify({"error": "必須提供起始頁 (start) 和結束頁 (end)"}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"處理請求時出錯: {str(e)}")
+        return jsonify({"error": str(e), "detail": "服務器處理請求時發生錯誤"}), 500
 
 # 添加簡單的文檔頁面
 @app.route('/', methods=['GET'])
