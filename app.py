@@ -1,0 +1,168 @@
+from flask import Flask, request, jsonify
+import json
+import sys
+import os
+
+# 確保可以匯入 PttWebCrawler 模組
+# 在實際使用時，您已經 fork 了該專案，這個模組應該已經在您的環境中
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from PttWebCrawler.crawler import PttWebCrawler
+
+app = Flask(__name__)
+
+@app.route('/api/articles', methods=['GET'])
+def get_articles():
+    """爬取特定看板的文章，可用頁數範圍"""
+    # 取得請求參數
+    board = request.args.get('board', '')
+    start_idx = request.args.get('start', '')
+    end_idx = request.args.get('end', '')
+    
+    # 參數檢查
+    if not board:
+        return jsonify({"error": "必須提供看板名稱 (board)"}), 400
+    
+    try:
+        # 如果提供了起始與結束頁數
+        if start_idx and end_idx:
+            start_idx = int(start_idx)
+            end_idx = int(end_idx)
+            
+            # 初始化爬蟲
+            crawler = PttWebCrawler(as_lib=True)
+            articles = crawler.parse_articles(start_idx, end_idx, board)
+            return jsonify(articles)
+        else:
+            return jsonify({"error": "必須提供起始頁 (start) 和結束頁 (end)"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/article/<article_id>', methods=['GET'])
+def get_article_by_id(article_id):
+    """爬取特定ID的文章"""
+    board = request.args.get('board', '')
+    
+    # 參數檢查
+    if not board:
+        return jsonify({"error": "必須提供看板名稱 (board)"}), 400
+    
+    try:
+        # 初始化爬蟲
+        crawler = PttWebCrawler(as_lib=True)
+        article = crawler.parse_article(article_id, board)
+        return jsonify(article)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/search', methods=['GET'])
+def search_articles():
+    """搜尋特定關鍵字的文章"""
+    board = request.args.get('board', '')
+    keyword = request.args.get('keyword', '')
+    
+    # 參數檢查
+    if not board:
+        return jsonify({"error": "必須提供看板名稱 (board)"}), 400
+    if not keyword:
+        return jsonify({"error": "必須提供關鍵字 (keyword)"}), 400
+    
+    try:
+        # 初始化爬蟲 (這個功能需要確認原專案是否支援關鍵字搜尋)
+        crawler = PttWebCrawler(as_lib=True)
+        # 若原專案有實現，可以使用
+        # articles = crawler.search_articles(keyword, board)
+        
+        # 若原專案未實現，可以先回傳未實現訊息
+        return jsonify({"error": "關鍵字搜尋功能尚未實現"}), 501
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/articles/list', methods=['GET'])
+def get_articles_list():
+    """爬取特定看板的文章列表資訊（標題、作者、日期、推噓文數），不進入文章頁面爬取內容"""
+    # 取得請求參數
+    board = request.args.get('board', '')
+    start_idx = request.args.get('start', '')
+    end_idx = request.args.get('end', '')
+    
+    # 參數檢查
+    if not board:
+        return jsonify({"error": "必須提供看板名稱 (board)"}), 400
+    
+    try:
+        # 如果提供了起始與結束頁數
+        if start_idx and end_idx:
+            start_idx = int(start_idx)
+            end_idx = int(end_idx)
+            
+            # 初始化爬蟲
+            crawler = PttWebCrawler(as_lib=True)
+            articles = crawler.parse_list_articles(start_idx, end_idx, board)
+            return jsonify(articles)
+        else:
+            return jsonify({"error": "必須提供起始頁 (start) 和結束頁 (end)"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 添加簡單的文檔頁面
+@app.route('/', methods=['GET'])
+def index():
+    return """
+    <html>
+        <head>
+            <title>PTT Web Crawler API</title>
+            <style>
+                body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+                h1 { color: #333; }
+                .endpoint { margin-bottom: 20px; padding: 10px; background-color: #f5f5f5; border-radius: 5px; }
+                .method { font-weight: bold; color: #0066cc; }
+                .url { font-family: monospace; }
+                .params { margin-top: 10px; }
+                .param { margin-left: 20px; }
+            </style>
+        </head>
+        <body>
+            <h1>PTT Web Crawler API</h1>
+            <div class="endpoint">
+                <div class="method">GET</div>
+                <div class="url">/api/articles?board={board}&start={start_idx}&end={end_idx}</div>
+                <div class="params">
+                    <div class="param"><strong>board</strong>: PTT 看板名稱 (必填)</div>
+                    <div class="param"><strong>start</strong>: 起始頁數 (必填)</div>
+                    <div class="param"><strong>end</strong>: 結束頁數 (必填)</div>
+                </div>
+            </div>
+            
+            <div class="endpoint">
+                <div class="method">GET</div>
+                <div class="url">/api/article/{article_id}?board={board}</div>
+                <div class="params">
+                    <div class="param"><strong>article_id</strong>: 文章 ID (必填)</div>
+                    <div class="param"><strong>board</strong>: PTT 看板名稱 (必填)</div>
+                </div>
+            </div>
+            
+            <div class="endpoint">
+                <div class="method">GET</div>
+                <div class="url">/api/search?board={board}&keyword={keyword}</div>
+                <div class="params">
+                    <div class="param"><strong>board</strong>: PTT 看板名稱 (必填)</div>
+                    <div class="param"><strong>keyword</strong>: 搜尋關鍵字 (必填)</div>
+                </div>
+            </div>
+
+            <div class="endpoint">
+                <div class="method">GET</div>
+                <div class="url">/api/articles/list?board={board}&start={start_idx}&end={end_idx}</div>
+                <div class="params">
+                    <div class="param"><strong>board</strong>: PTT 看板名稱 (必填)</div>
+                    <div class="param"><strong>start</strong>: 起始頁數 (必填)</div>
+                    <div class="param"><strong>end</strong>: 結束頁數 (必填)</div>
+                </div>
+            </div>
+        </body>
+    </html>
+    """
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
