@@ -286,39 +286,39 @@ class PttWebCrawler(object):
             'Upgrade-Insecure-Requests': '1'
         }
         
-        try:
-            resp = session.get(
-                url=link, 
-                headers=headers, 
-                verify=VERIFY, 
-                timeout=timeout
+
+        resp = session.get(
+            url=link, 
+            headers=headers, 
+            verify=VERIFY, 
+            timeout=timeout
+        )
+        
+        if resp.status_code != 200:
+            print('invalid url:', resp.url)
+            return json.dumps({"error": "invalid url", "status_code": resp.status_code}, sort_keys=True, ensure_ascii=False)
+        
+        # 檢查是否需要年齡驗證
+        if '您必須年滿十八歲才能瀏覽此網頁' in resp.text:
+            print("需要年齡驗證，嘗試通過...")
+            from_url = link.replace(PttWebCrawler.PTT_URL, '')
+            resp = session.post(
+                'https://www.ptt.cc/ask/over18',
+                data={'from': from_url, 'yes': 'yes'},
+                headers=headers,
+                timeout=timeout,
+                verify=VERIFY
             )
-            
+            # 再次獲取文章
+            resp = session.get(url=link, headers=headers, verify=VERIFY, timeout=timeout)
             if resp.status_code != 200:
-                print('invalid url:', resp.url)
-                return json.dumps({"error": "invalid url", "status_code": resp.status_code}, sort_keys=True, ensure_ascii=False)
-            
-            # 檢查是否需要年齡驗證
-            if '您必須年滿十八歲才能瀏覽此網頁' in resp.text:
-                print("需要年齡驗證，嘗試通過...")
-                from_url = link.replace(PttWebCrawler.PTT_URL, '')
-                resp = session.post(
-                    'https://www.ptt.cc/ask/over18',
-                    data={'from': from_url, 'yes': 'yes'},
-                    headers=headers,
-                    timeout=timeout,
-                    verify=VERIFY
-                )
-                # 再次獲取文章
-                resp = session.get(url=link, headers=headers, verify=VERIFY, timeout=timeout)
-                if resp.status_code != 200:
-                    return json.dumps({"error": "age verification failed"}, sort_keys=True, ensure_ascii=False)
-            
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            main_content = soup.find(id="main-content")
-            
-            if not main_content:
-                return json.dumps({"error": "main-content not found", "url": link}, sort_keys=True, ensure_ascii=False)
+                return json.dumps({"error": "age verification failed"}, sort_keys=True, ensure_ascii=False)
+        
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        main_content = soup.find(id="main-content")
+        
+        if not main_content:
+            return json.dumps({"error": "main-content not found", "url": link}, sort_keys=True, ensure_ascii=False)
         metas = main_content.select('div.article-metaline')
         author = ''
         title = ''
