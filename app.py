@@ -86,32 +86,89 @@ def get_articles_list():
     end_idx = request.args.get('end', '')
     timeout = request.args.get('timeout', '30')  # 增加可選的超時參數，默認 30 秒
     
+    # 記錄請求資訊
+    app.logger.info(f"收到爬取文章列表請求: board={board}, start={start_idx}, end={end_idx}, timeout={timeout}")
+    
     # 參數檢查
     if not board:
+        app.logger.warning("缺少必要參數: 看板名稱")
         return jsonify({"error": "必須提供看板名稱 (board)"}), 400
     
     try:
         # 如果提供了起始與結束頁數
         if start_idx and end_idx:
-            start_idx = int(start_idx)
-            end_idx = int(end_idx)
-            timeout = int(timeout)
+            try:
+                start_idx = int(start_idx)
+                end_idx = int(end_idx)
+                timeout = int(timeout)
+            except ValueError:
+                app.logger.warning(f"參數格式錯誤: start={start_idx}, end={end_idx}, timeout={timeout}")
+                return jsonify({"error": "頁數和超時參數必須為整數"}), 400
+            
+            # 參數範圍檢查
+            if start_idx <= 0 or end_idx <= 0:
+                app.logger.warning(f"頁數參數範圍錯誤: start={start_idx}, end={end_idx}")
+                return jsonify({"error": "頁數參數必須大於 0"}), 400
+            
+            if end_idx < start_idx:
+                app.logger.warning(f"頁數範圍錯誤: start={start_idx} 大於 end={end_idx}")
+                return jsonify({"error": "結束頁數不能小於起始頁數"}), 400
+            
+            if timeout < 5:
+                app.logger.warning(f"超時參數過小: timeout={timeout}")
+                timeout = 5  # 確保最小超時時間
+            
+            app.logger.info(f"開始爬取 {board} 板的文章列表，頁數: {start_idx}-{end_idx}")
             
             # 初始化爬蟲
             crawler = PttWebCrawler(as_lib=True)
+            
+            # 在 Azure 上執行時可能需要更長的超時時間
+            if 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ:
+                app.logger.info("檢測到 Azure 環境，增加超時時間")
+                timeout = max(timeout, 60)  # Azure 環境下最小超時時間為 60 秒
+            
             result = crawler.parse_list_articles(start_idx, end_idx, board, timeout=timeout)
             
             # 檢查是否爬取到文章和錯誤
-            if 'articles' in result and len(result['articles']) == 0:
-                if 'errors' in result and len(result['errors']) > 0:
-                    app.logger.error(f"爬取 {board} 板時出錯: {result['errors']}")
+            if 'articles' in result:
+                article_count = len(result['articles'])
+                app.logger.info(f"從 {board} 板爬取到 {article_count} 篇文章")
+                
+                if article_count == 0:
+                    if 'errors' in result and len(result['errors']) > 0:
+                        app.logger.error(f"爬取 {board} 板時出錯: {result['errors']}")
+                        # 增加診斷資訊
+                        result['diagnosis'] = {
+                            'runtime_env': {
+                                'is_azure': 'AZURE_FUNCTIONS_ENVIRONMENT' in os.environ or 'WEBSITE_SITE_NAME' in os.environ,
+                                'python_version': sys.version,
+                                'ip_info': 'Azure App Service 無法獲取外部 IP'
+                            },
+                            'request_info': {
+                                'board': board,
+                                'start': start_idx,
+                                'end': end_idx,
+                                'timeout': timeout
+                            }
+                        }
             
             return jsonify(result)
         else:
+            app.logger.warning("缺少必要參數: 起始頁或結束頁")
             return jsonify({"error": "必須提供起始頁 (start) 和結束頁 (end)"}), 400
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         app.logger.error(f"處理請求時出錯: {str(e)}")
-        return jsonify({"error": str(e), "detail": "服務器處理請求時發生錯誤"}), 500
+        app.logger.error(f"詳細錯誤: {error_details}")
+        
+        # 增加更詳細的錯誤回報
+        return jsonify({
+            "error": str(e), 
+            "detail": "服務器處理請求時發生錯誤",
+            "trace": error_details.split('\n')[-10:] if 'DEBUG' in os.environ else "啟用 DEBUG 環境變數以查看詳細堆疊追蹤"
+        }), 500
 
 # 添加簡單的文檔頁面
 @app.route('/', methods=['GET'])

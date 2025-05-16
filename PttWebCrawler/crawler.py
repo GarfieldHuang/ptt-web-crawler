@@ -272,12 +272,53 @@ class PttWebCrawler(object):
     @staticmethod
     def parse(link, article_id, board, timeout=3):
         print('Processing article:', article_id)
-        resp = requests.get(url=link, cookies={'over18': '1'}, verify=VERIFY, timeout=timeout)
-        if resp.status_code != 200:
-            print('invalid url:', resp.url)
-            return json.dumps({"error": "invalid url"}, sort_keys=True, ensure_ascii=False)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        main_content = soup.find(id="main-content")
+        
+        # 建立 Session 以保持 cookie
+        session = requests.Session()
+        session.cookies.set('over18', '1', domain='www.ptt.cc')
+        
+        # 使用更完整的標頭
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        try:
+            resp = session.get(
+                url=link, 
+                headers=headers, 
+                verify=VERIFY, 
+                timeout=timeout
+            )
+            
+            if resp.status_code != 200:
+                print('invalid url:', resp.url)
+                return json.dumps({"error": "invalid url", "status_code": resp.status_code}, sort_keys=True, ensure_ascii=False)
+            
+            # 檢查是否需要年齡驗證
+            if '您必須年滿十八歲才能瀏覽此網頁' in resp.text:
+                print("需要年齡驗證，嘗試通過...")
+                from_url = link.replace(PttWebCrawler.PTT_URL, '')
+                resp = session.post(
+                    'https://www.ptt.cc/ask/over18',
+                    data={'from': from_url, 'yes': 'yes'},
+                    headers=headers,
+                    timeout=timeout,
+                    verify=VERIFY
+                )
+                # 再次獲取文章
+                resp = session.get(url=link, headers=headers, verify=VERIFY, timeout=timeout)
+                if resp.status_code != 200:
+                    return json.dumps({"error": "age verification failed"}, sort_keys=True, ensure_ascii=False)
+            
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            main_content = soup.find(id="main-content")
+            
+            if not main_content:
+                return json.dumps({"error": "main-content not found", "url": link}, sort_keys=True, ensure_ascii=False)
         metas = main_content.select('div.article-metaline')
         author = ''
         title = ''
@@ -361,14 +402,45 @@ class PttWebCrawler(object):
 
     @staticmethod
     def getLastPage(board, timeout=3):
-        content = requests.get(
-            url= 'https://www.ptt.cc/bbs/' + board + '/index.html',
-            cookies={'over18': '1'}, timeout=timeout
-        ).content.decode('utf-8')
-        first_page = re.search(r'href="/bbs/' + board + '/index(\d+).html">&lsaquo;', content)
-        if first_page is None:
+        # 建立 Session 以保持 cookie
+        session = requests.Session()
+        session.cookies.set('over18', '1', domain='www.ptt.cc')
+        
+        # 使用更完整的標頭
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        try:
+            response = session.get(
+                url='https://www.ptt.cc/bbs/' + board + '/index.html',
+                headers=headers,
+                timeout=timeout,
+                verify=VERIFY
+            )
+            
+            if response.status_code != 200:
+                print(f"獲取最後頁面時失敗，狀態碼: {response.status_code}")
+                return 1
+            
+            content = response.content.decode('utf-8')
+            first_page = re.search(r'href="/bbs/' + board + '/index(\d+).html">&lsaquo;', content)
+            
+            if first_page is None:
+                # 嘗試其他可能的模式
+                first_page = re.search(r'href="/bbs/' + board + '/index(\d+).html"', content)
+                if first_page is None:
+                    print(f"無法解析 {board} 板的最後頁面，使用默認值 1")
+                    return 1
+            
+            return int(first_page.group(1)) + 1
+        except Exception as e:
+            print(f"獲取最後頁面時出錯: {e}")
             return 1
-        return int(first_page.group(1)) + 1
 
     @staticmethod
     def store(filename, data, mode):
@@ -399,11 +471,19 @@ class PttWebCrawler(object):
         # 建立 Session 保持 cookie
         session = requests.Session()
         
-        # 使用更簡單的 headers，有時候太多 headers 反而容易被識別為爬蟲
+        # 使用更完整的瀏覽器標頭，避免被反爬蟲機制識別
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Pragma': 'no-cache',
+            'Cache-Control': 'no-cache',
         }
         
         # 隨機選擇一個常見的 User-Agent，增加爬蟲的隱蔽性
@@ -415,46 +495,9 @@ class PttWebCrawler(object):
         ]
         headers['User-Agent'] = random.choice(user_agents)
         
-        # 第一次請求獲取 cookies
+        # Azure 上執行時處理 cookie 的特殊邏輯
         try:
-            # 先訪問首頁獲取基本 cookie
-            print(f"訪問 PTT 首頁獲取 cookie")
-            resp = session.get(
-                'https://www.ptt.cc/bbs/index.html',
-                headers=headers,
-                timeout=timeout,
-                verify=VERIFY
-            )
-            
-            if resp.status_code != 200:
-                error_msg = f"訪問 PTT 首頁失敗，狀態碼: {resp.status_code}"
-                print(error_msg)
-                error_log.append(error_msg)
-                return {'articles': [], 'errors': error_log}
-            
-            # 檢查是否遇到年齡驗證頁面
-            if '您必須年滿十八歲才能瀏覽此網頁' in resp.text:
-                print("遇到年齡驗證頁面，嘗試通過...")
-                
-                # 獲取表單送出 URL
-                form_action_url = 'https://www.ptt.cc/ask/over18'
-                
-                # 送出年齡確認表單
-                resp = session.post(
-                    form_action_url,
-                    data={'from': '/bbs/index.html', 'yes': 'yes'},
-                    headers=headers,
-                    timeout=timeout,
-                    verify=VERIFY
-                )
-                
-                if resp.status_code != 200:
-                    error_msg = f"年齡驗證失敗，狀態碼: {resp.status_code}"
-                    print(error_msg)
-                    error_log.append(error_msg)
-                    return {'articles': [], 'errors': error_log}
-            
-            # 強制設置 over18 cookie
+            # 直接設定年齡驗證 cookie，跳過需要請求首頁的步驟
             session.cookies.set('over18', '1', domain='www.ptt.cc')
             
             # 直接訪問目標板塊
@@ -464,7 +507,8 @@ class PttWebCrawler(object):
                 board_url,
                 headers=headers,
                 timeout=timeout,
-                verify=VERIFY
+                verify=VERIFY,
+                allow_redirects=True  # 允許重定向，可能對於處理某些防爬蟲機制有幫助
             )
             
             # 檢查板塊是否存在
@@ -504,6 +548,10 @@ class PttWebCrawler(object):
                 print(f"{board} 板最大頁數: {max_page}")
                 
                 # 確保頁碼在有效範圍內
+                if start <= 0:
+                    start = 1
+                    print(f"起始頁碼小於等於0，已自動調整為: {start}")
+                
                 if end > max_page:
                     end = max_page
                     print(f"結束頁碼超過最大頁數，已自動調整為: {end}")
@@ -511,7 +559,10 @@ class PttWebCrawler(object):
                 error_msg = f"獲取最大頁數時出錯: {e}"
                 print(error_msg)
                 error_log.append(error_msg)
-                # 如果無法獲取最大頁數，嘗試繼續爬取而不調整頁碼範圍
+                # 如果無法獲取最大頁數，使用合理的預設值
+                if end > 10000:
+                    end = 10000  # 設定一個合理的上限
+                    print(f"無法獲取最大頁數，設定結束頁碼為: {end}")
                 
         except Exception as e:
             error_msg = f"初始化連接時出錯: {e}"
@@ -538,16 +589,6 @@ class PttWebCrawler(object):
                     error_log.append(error_msg)
                     continue
                 
-                # 保存 HTML 以便偵錯 (可選)
-                # with open(f"page_{board}_{i}.html", "w", encoding="utf-8") as f:
-                #     f.write(resp.text)
-                
-                # 保存 HTML 以便偵錯（僅在開發測試時啟用）
-                # html_filename = f"debug_{board}_{i}.html"
-                # with open(html_filename, "w", encoding="utf-8") as f:
-                #     f.write(resp.text)
-                # print(f"已保存 HTML 到 {html_filename}")
-                
                 # 解析 HTML
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 
@@ -567,26 +608,20 @@ class PttWebCrawler(object):
                             print(error_msg)
                             error_log.append(error_msg)
                             
-                            # 檢查頁面是否包含特定的字串，判斷是否是反爬蟲機制
-                            if '禁止使用' in resp.text or '您的連線已被管理員封鎖' in resp.text:
-                                error_msg = "可能被 PTT 的反爬蟲機制阻擋"
-                                print(error_msg)
-                                error_log.append(error_msg)
-                            elif '無法連線至伺服器' in resp.text:
-                                error_msg = "無法連線至 PTT 伺服器"
-                                print(error_msg)
-                                error_log.append(error_msg)
-                                
-                            # 檢查頁面的基本結構
-                            main_container = soup.select_one('div#main-container')
-                            if main_container:
-                                print("找到 main-container，但沒有文章區塊")
-                                # 檢查是否有其他可能的文章容器
-                                other_containers = main_container.find_all("div", recursive=False)
-                                print(f"main-container 中有 {len(other_containers)} 個直接子 div")
-                            else:
-                                print("頁面中沒有找到 main-container")
-                                
+                            # 保存頁面內容以便調試
+                            debug_file = f"debug_{board}_{i}.html"
+                            with open(debug_file, 'w', encoding='utf-8') as f:
+                                f.write(resp.text)
+                            print(f"已將頁面內容保存到 {debug_file} 以便調試")
+                            
+                            # 嘗試檢查頁面內容中是否有特定提示
+                            page_content = resp.text.lower()
+                            if 'over18' in page_content or '年滿十八歲' in page_content:
+                                print("疑似年齡驗證問題，重新嘗試設定 cookie")
+                                # 重新設定 cookie 後重試
+                                session.cookies.clear()
+                                session.cookies.set('over18', '1', domain='www.ptt.cc')
+                                # 不重試，繼續下一頁
                             continue
                 except Exception as e:
                     error_msg = f"解析 HTML 時發生錯誤: {e}"
@@ -633,30 +668,19 @@ class PttWebCrawler(object):
                         # 解析推文數
                         if push_count_text == '爆':
                             push_count = 100
-                        elif push_count_text == 'X1':
-                            push_count = -10
-                        elif push_count_text == 'X2':
-                            push_count = -20
-                        elif push_count_text == 'X3':
-                            push_count = -30
-                        elif push_count_text == 'X4':
-                            push_count = -40
-                        elif push_count_text == 'X5':
-                            push_count = -50
-                        elif push_count_text == 'X6':
-                            push_count = -60
-                        elif push_count_text == 'X7':
-                            push_count = -70
-                        elif push_count_text == 'X8':
-                            push_count = -80
-                        elif push_count_text == 'X9':
-                            push_count = -90
-                        elif push_count_text == 'XX':
-                            push_count = -100
                         elif push_count_text.startswith('X'):
-                            push_count = -int(push_count_text.replace('X', '')) if push_count_text.replace('X', '').isdigit() else 0
+                            if push_count_text == 'XX':
+                                push_count = -100
+                            else:
+                                try:
+                                    push_count = -int(push_count_text[1:]) if push_count_text[1:].isdigit() else 0
+                                except:
+                                    push_count = 0
                         else:
-                            push_count = int(push_count_text) if push_count_text.isdigit() else 0
+                            try:
+                                push_count = int(push_count_text) if push_count_text.isdigit() else 0
+                            except:
+                                push_count = 0
                         
                         # 建立文章資訊字典
                         article_info = {
