@@ -16,7 +16,6 @@ azure-functions
 wfastcgi>=3.0.0
 
 # 調試與監控
-logging
 flask-cors
 pytest
 requests-oauthlib
