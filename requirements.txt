@@ -11,4 +11,14 @@ Werkzeug==2.2.3
 lxml==4.9.2
 gunicorn==20.1.0
 
+# Azure 需要的套件
+azure-functions
+wfastcgi>=3.0.0
+
+# 調試與監控
+logging
+flask-cors
+pytest
+requests-oauthlib
+
 # 已移除 PyPtt 相依性，因為統一使用 PttWebCrawler

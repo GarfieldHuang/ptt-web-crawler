@@ -290,4 +290,12 @@ def index():
     """
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # 區分本地開發環境與 Azure 生產環境
+    if 'WEBSITE_HOSTNAME' in os.environ:
+        # 在 Azure App Service 上運行，讓內建的 web 伺服器處理請求
+        app.config['SERVER_NAME'] = os.environ['WEBSITE_HOSTNAME']
+        print(f"Running on Azure App Service: {os.environ['WEBSITE_HOSTNAME']}")
+        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))
+    else:
+        # 本地開發環境
+        app.run(host='0.0.0.0', port=5000, debug=True)
